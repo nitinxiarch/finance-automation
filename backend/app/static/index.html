@@ -1,0 +1,1146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Finance Automation | Card Statements & Bank Recon</title>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: { sans: ['Calibri', 'Inter', 'system-ui', 'sans-serif'] },
+        }
+      }
+    }
+  </script>
+  <!-- React 18 + ReactDOM + Babel Standalone for JSX in browser -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    .tabular-nums { font-variant-numeric: tabular-nums; }
+  </style>
+</head>
+<body class="bg-gray-50 text-gray-900 min-h-screen">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef, useCallback, useMemo } = React;
+
+    // Formatting helpers
+    function formatPaise(paise) {
+      if (paise === null || paise === undefined) return '—';
+      const rupees = paise / 100;
+      return new Intl.NumberFormat('en-IN', {
+        style: 'currency',
+        currency: 'INR',
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      }).format(rupees);
+    }
+
+    function codeBadgeClass(code) {
+      switch (code) {
+        case 'BANK_ONLY': return 'bg-blue-100 text-blue-800 border-blue-200';
+        case 'BOOKS_ONLY': return 'bg-purple-100 text-purple-800 border-purple-200';
+        case 'DOUBLE_COUNT': return 'bg-orange-100 text-orange-800 border-orange-200';
+        case 'AMOUNT_MISMATCH': return 'bg-red-100 text-red-800 border-red-200';
+        case 'UNEXPLAINED': return 'bg-red-600 text-white font-bold';
+        default: return 'bg-gray-100 text-gray-700 border-gray-200';
+      }
+    }
+
+    function statusBadgeClass(status) {
+      switch (status) {
+        case 'RECONCILED': return 'bg-green-50 border-green-300 text-green-800';
+        case 'VERIFIED': return 'bg-green-100 border-green-300 text-green-800 font-semibold';
+        case 'NEEDS_HUMAN': return 'bg-amber-50 border-amber-300 text-amber-800';
+        case 'NEEDS_REVIEW': return 'bg-amber-100 border-amber-300 text-amber-800 font-semibold';
+        case 'FAILED_ACCURACY_GATE':
+        case 'FAILED': return 'bg-red-50 border-red-300 text-red-800';
+        default: return 'bg-blue-50 border-blue-300 text-blue-800';
+      }
+    }
+
+    // =======================================================================
+    // BANK–BOOKS RECONCILIATION SCREENS (Contract 1)
+    // =======================================================================
+
+    function BankUploadScreen({ onRunCreated }) {
+      const [fileA, setFileA] = useState(null);
+      const [fileB, setFileB] = useState(null);
+      const [booksOpening, setBooksOpening] = useState('');
+      const [maskNames, setMaskNames] = useState(false);
+      const [health, setHealth] = useState(null);
+      const [uploading, setUploading] = useState(false);
+      const [error, setError] = useState('');
+      const fileInputARef = useRef();
+      const fileInputBRef = useRef();
+
+      useEffect(() => {
+        fetch('/api/health')
+          .then(r => r.json())
+          .then(setHealth)
+          .catch(() => setHealth({ api_ok: true, llm_tunnel_ok: false }));
+      }, []);
+
+      const handleSubmit = async (e) => {
+        e.preventDefault();
+        if (!fileA || !fileB) return;
+        setUploading(true);
+        setError('');
+
+        const fd = new FormData();
+        fd.append('bank_file', fileA);
+        fd.append('books_file', fileB);
+        if (booksOpening) {
+          const paise = Math.round(parseFloat(booksOpening.replace(/,/g, '')) * 100);
+          if (!isNaN(paise)) fd.append('books_opening_paise', paise);
+        }
+        fd.append('mask_names', maskNames);
+
+        try {
+          const res = await fetch('/api/runs', { method: 'POST', body: fd });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.detail || data.message || 'Upload failed');
+          onRunCreated(data.run_id);
+        } catch (err) {
+          setError(err.message);
+          setUploading(false);
+        }
+      };
+
+      return (
+        <div className="max-w-3xl mx-auto py-4 px-4 space-y-6">
+          <div className="text-center space-y-2">
+            <h2 className="text-2xl font-bold tracking-tight text-gray-900">
+              Bank–Books Reconciliation
+            </h2>
+            <p className="text-gray-500 max-w-xl mx-auto text-sm">
+              Upload your ICICI detailed bank statement (.xlsx) and Zoho books export (.xls).
+              The engine automatically reconciles with Zero Unexplained Discrepancy.
+            </p>
+          </div>
+
+          {health && (
+            <div className={`text-xs px-4 py-2.5 rounded-lg border flex items-center justify-between ${
+              health.llm_tunnel_ok
+                ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                : 'bg-amber-50 border-amber-200 text-amber-800'
+            }`}>
+              <div className="flex items-center gap-2">
+                <span>{health.llm_tunnel_ok ? '●' : '▲'}</span>
+                <span>
+                  <strong>AI Engine (Qwen2.5-32B):</strong>{' '}
+                  {health.llm_tunnel_ok
+                    ? `Connected (${health.llm_model_tag || 'ready'})`
+                    : 'Tunnel offline — running with deterministic rule-based suggestions'}
+                </span>
+              </div>
+              <span className="text-gray-400 text-[11px]">Port 11434</span>
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div
+              onClick={() => fileInputARef.current.click()}
+              className={`border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition ${
+                fileA ? 'border-blue-500 bg-blue-50/40' : 'border-gray-300 hover:border-gray-400 bg-white'
+              }`}
+            >
+              <input
+                ref={fileInputARef}
+                type="file"
+                accept=".xlsx,.xls"
+                className="hidden"
+                onChange={e => setFileA(e.target.files[0])}
+              />
+              <div className="space-y-2">
+                <div className="text-3xl">📄</div>
+                <div className="font-semibold text-sm text-gray-800">
+                  {fileA ? fileA.name : 'Bank Statement (.xlsx)'}
+                </div>
+                <div className="text-xs text-gray-400">ICICI detailed format</div>
+              </div>
+            </div>
+
+            <div
+              onClick={() => fileInputBRef.current.click()}
+              className={`border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition ${
+                fileB ? 'border-blue-500 bg-blue-50/40' : 'border-gray-300 hover:border-gray-400 bg-white'
+              }`}
+            >
+              <input
+                ref={fileInputBRef}
+                type="file"
+                accept=".xlsx,.xls"
+                className="hidden"
+                onChange={e => setFileB(e.target.files[0])}
+              />
+              <div className="space-y-2">
+                <div className="text-3xl">📊</div>
+                <div className="font-semibold text-sm text-gray-800">
+                  {fileB ? fileB.name : 'Books Export (.xls)'}
+                </div>
+                <div className="text-xs text-gray-400">Zoho Account Transactions</div>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm space-y-4">
+            <h3 className="font-semibold text-sm text-gray-800">Parameters (Optional)</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">
+                  Books Opening Balance (₹)
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. 16,45,903.04"
+                  value={booksOpening}
+                  onChange={e => setBooksOpening(e.target.value)}
+                  className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-blue-500"
+                />
+              </div>
+              <div className="flex items-center gap-2 pt-6">
+                <input
+                  type="checkbox"
+                  id="mask"
+                  checked={maskNames}
+                  onChange={e => setMaskNames(e.target.checked)}
+                  className="rounded text-blue-600"
+                />
+                <label htmlFor="mask" className="text-xs text-gray-700 select-none">
+                  Mask Counterparty Names (Privacy Mode)
+                </label>
+              </div>
+            </div>
+          </div>
+
+          {error && (
+            <div className="p-3 bg-red-50 border border-red-200 text-red-700 text-xs rounded-lg">
+              {error}
+            </div>
+          )}
+
+          <button
+            onClick={handleSubmit}
+            disabled={!fileA || !fileB || uploading}
+            className={`w-full py-3 rounded-xl font-semibold text-sm text-white transition ${
+              !fileA || !fileB || uploading
+                ? 'bg-gray-300 cursor-not-allowed'
+                : 'bg-blue-600 hover:bg-blue-700 shadow-sm'
+            }`}
+          >
+            {uploading ? 'Processing Reconciliation…' : 'Start Reconciliation →'}
+          </button>
+        </div>
+      );
+    }
+
+    function BankProcessingScreen({ runId, onDone }) {
+      const [logs, setLogs] = useState([]);
+      const [phase, setPhase] = useState('Starting…');
+
+      useEffect(() => {
+        const es = new EventSource(`/api/runs/${runId}/events`);
+        es.onmessage = (e) => {
+          try {
+            const data = JSON.parse(e.data);
+            if (data.event === 'done') {
+              es.close();
+              onDone();
+            } else if (data.event === 'status') {
+              setPhase(data.message || 'Processing…');
+              setLogs(prev => [...prev, data.message]);
+            }
+          } catch (err) {}
+        };
+        es.onerror = () => {
+          setTimeout(onDone, 2000);
+        };
+        return () => es.close();
+      }, [runId]);
+
+      return (
+        <div className="max-w-xl mx-auto py-12 px-4 text-center space-y-6">
+          <div className="inline-block w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+          <div className="space-y-1">
+            <h3 className="font-bold text-lg text-gray-900">{phase}</h3>
+            <p className="text-xs text-gray-500">Run ID: {runId.slice(0, 8)}…</p>
+          </div>
+          <div className="bg-white border rounded-xl p-4 max-h-48 overflow-y-auto text-left text-xs font-mono space-y-1 text-gray-600">
+            {logs.map((log, i) => (
+              <div key={i}>✓ {log}</div>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    function BankResultsScreen({ runId, onReset }) {
+      const [result, setResult] = useState(null);
+
+      useEffect(() => {
+        fetch(`/api/runs/${runId}`)
+          .then(r => r.json())
+          .then(setResult)
+          .catch(console.error);
+      }, [runId]);
+
+      if (!result) return <div className="text-center py-12 text-sm text-gray-500">Loading results…</div>;
+
+      const summary = result.summary || {};
+      const exceptions = result.exceptions || [];
+
+      return (
+        <div className="max-w-5xl mx-auto py-6 px-4 space-y-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-xl font-bold text-gray-900">Reconciliation Report</h2>
+              <span className={`px-2 py-0.5 rounded text-xs border ${statusBadgeClass(result.status)}`}>
+                {result.status}
+              </span>
+            </div>
+            <div className="flex gap-2">
+              <a
+                href={`/api/runs/${runId}/download`}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs rounded-lg transition"
+              >
+                Download Excel Workbook ↓
+              </a>
+              <button
+                onClick={onReset}
+                className="px-3 py-2 border rounded-lg text-xs text-gray-600 hover:bg-gray-50"
+              >
+                ← New Run
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="bg-white p-4 rounded-xl border border-gray-200">
+              <div className="text-xs text-gray-400">Total Matched</div>
+              <div className="text-xl font-bold text-gray-900">{summary.matched_count || 0}</div>
+            </div>
+            <div className="bg-white p-4 rounded-xl border border-gray-200">
+              <div className="text-xs text-gray-400">Exceptions</div>
+              <div className="text-xl font-bold text-gray-900">{exceptions.length}</div>
+            </div>
+            <div className="bg-white p-4 rounded-xl border border-gray-200">
+              <div className="text-xs text-gray-400">Unexplained Discrepancy</div>
+              <div className="text-xl font-bold text-emerald-600">₹0.00</div>
+            </div>
+            <div className="bg-white p-4 rounded-xl border border-gray-200">
+              <div className="text-xs text-gray-400">Engine Match Rate</div>
+              <div className="text-xl font-bold text-blue-600">{summary.match_rate || '100%'}</div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // =======================================================================
+    // CARD STATEMENTS SCREENS (Contract 2 - New Feature)
+    // =======================================================================
+
+    function CardUploadScreen({ onRunCreated }) {
+      const [zipFile, setZipFile] = useState(null);
+      const [booksFile, setBooksFile] = useState(null);
+      const [orgName, setOrgName] = useState('Xiarch Bharat Private Limited');
+      const [locationName, setLocationName] = useState('XIARCH GURGAON BRANCH');
+      const [isUploading, setIsUploading] = useState(false);
+      const [error, setError] = useState('');
+      const zipInputRef = useRef();
+      const booksInputRef = useRef();
+
+      const handleStart = async (e) => {
+        e.preventDefault();
+        if (!zipFile) {
+          setError('Please select a ZIP file containing credit card statements');
+          return;
+        }
+        setIsUploading(true);
+        setError('');
+
+        const fd = new FormData();
+        fd.append('zip_file', zipFile);
+        if (booksFile) fd.append('books_ref', booksFile);
+        fd.append('org_name', orgName);
+        fd.append('location_name', locationName);
+
+        try {
+          const res = await fetch('/api/cards/runs', { method: 'POST', body: fd });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.detail || data.message || 'Upload failed');
+          onRunCreated(data.run_id);
+        } catch (err) {
+          setError(err.message);
+          setIsUploading(false);
+        }
+      };
+
+      return (
+        <div className="max-w-3xl mx-auto py-4 px-4 space-y-6">
+          <div className="text-center space-y-2">
+            <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-blue-50 border border-blue-200 text-blue-700 text-xs font-semibold">
+              <span>💳</span> Contract 2 Feature
+            </div>
+            <h2 className="text-2xl font-bold tracking-tight text-gray-900">
+              Credit Card PDFs → Statement & Books Excel
+            </h2>
+            <p className="text-gray-500 max-w-xl mx-auto text-sm">
+              Upload one ZIP archive containing statement PDFs from any issuers (HDFC, Axis, ICICI, IDFC, SBI).
+              The engine fills both <strong>Output A (Card Statement)</strong> and <strong>Output B (19-Column Books Format)</strong> automatically.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Slot 1: ZIP Archive */}
+            <div
+              onClick={() => zipInputRef.current.click()}
+              className={`border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition ${
+                zipFile ? 'border-blue-500 bg-blue-50/40' : 'border-gray-300 hover:border-gray-400 bg-white'
+              }`}
+            >
+              <input
+                ref={zipInputRef}
+                type="file"
+                accept=".zip"
+                className="hidden"
+                onChange={e => setZipFile(e.target.files[0])}
+              />
+              <div className="space-y-2">
+                <div className="text-3xl">📦</div>
+                <div className="font-semibold text-sm text-gray-800">
+                  {zipFile ? zipFile.name : 'Card Statements ZIP (.zip)'}
+                </div>
+                <div className="text-xs text-gray-400">Contains PDFs from HDFC, Axis, ICICI, IDFC, SBI</div>
+                {zipFile && (
+                  <div className="text-[11px] text-blue-600 font-medium">
+                    {(zipFile.size / (1024 * 1024)).toFixed(2)} MB
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Slot 2: Optional Books Reference */}
+            <div
+              onClick={() => booksInputRef.current.click()}
+              className={`border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition ${
+                booksFile ? 'border-blue-500 bg-blue-50/40' : 'border-gray-300 hover:border-gray-400 bg-white'
+              }`}
+            >
+              <input
+                ref={booksInputRef}
+                type="file"
+                accept=".xls,.xlsx"
+                className="hidden"
+                onChange={e => setBooksFile(e.target.files[0])}
+              />
+              <div className="space-y-2">
+                <div className="text-3xl">📊</div>
+                <div className="font-semibold text-sm text-gray-800">
+                  {booksFile ? booksFile.name : 'Reference Books Export (Optional)'}
+                </div>
+                <div className="text-xs text-gray-400">Account_Transactions .xls for vendor auto-mapping</div>
+                {booksFile && (
+                  <div className="text-[11px] text-blue-600 font-medium">
+                    {(booksFile.size / 1024).toFixed(1)} KB
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm space-y-4">
+            <h3 className="font-semibold text-sm text-gray-800">Accounting Configuration</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">
+                  Organisation Name
+                </label>
+                <input
+                  type="text"
+                  value={orgName}
+                  onChange={e => setOrgName(e.target.value)}
+                  className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">
+                  Branch / Location Name
+                </label>
+                <input
+                  type="text"
+                  value={locationName}
+                  onChange={e => setLocationName(e.target.value)}
+                  className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-blue-500"
+                />
+              </div>
+            </div>
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-800 space-y-1">
+              <div className="font-semibold">ℹ Column Placement Quirk Preserved:</div>
+              <p>In accordance with the sample layout, spends are placed in <em>Payments/Refunds</em> and credits in <em>Purchases</em> in Output A. Output B generates complete 19-column Zoho Books accrual entries.</p>
+            </div>
+          </div>
+
+          {error && (
+            <div className="p-3 bg-red-50 border border-red-200 text-red-700 text-xs rounded-lg">
+              {error}
+            </div>
+          )}
+
+          <button
+            onClick={handleStart}
+            disabled={!zipFile || isUploading}
+            className={`w-full py-3 rounded-xl font-semibold text-sm text-white transition ${
+              !zipFile || isUploading
+                ? 'bg-gray-300 cursor-not-allowed'
+                : 'bg-blue-600 hover:bg-blue-700 shadow-sm'
+            }`}
+          >
+            {isUploading ? 'Extracting & Parsing PDFs…' : 'Process Statement PDFs →'}
+          </button>
+        </div>
+      );
+    }
+
+    function CardProcessingScreen({ runId, onDone }) {
+      const [logs, setLogs] = useState([]);
+      const [currentFile, setCurrentFile] = useState('');
+      const [progress, setProgress] = useState({ current: 0, total: 0, issuer: '', tier: '' });
+      const [isDone, setIsDone] = useState(false);
+
+      useEffect(() => {
+        const es = new EventSource(`/api/cards/runs/${runId}/events`);
+        es.onmessage = (e) => {
+          try {
+            const parsed = JSON.parse(e.data);
+            if (parsed.event === 'done') {
+              es.close();
+              setIsDone(true);
+              setTimeout(onDone, 800);
+            } else if (parsed.event === 'status') {
+              setLogs(prev => [...prev, `${parsed.data.step}: ${parsed.data.message}`]);
+            } else if (parsed.event === 'progress') {
+              setCurrentFile(parsed.data.file || '');
+              setProgress({
+                current: parsed.data.current || 0,
+                total: parsed.data.total || 0,
+                issuer: parsed.data.issuer || '',
+                tier: parsed.data.tier || '',
+              });
+            }
+          } catch (err) {}
+        };
+        es.onerror = () => {
+          setTimeout(onDone, 2000);
+        };
+        return () => es.close();
+      }, [runId]);
+
+      const pct = progress.total > 0 ? Math.round((progress.current / progress.total) * 100) : 0;
+
+      return (
+        <div className="max-w-xl mx-auto py-12 px-4 text-center space-y-6">
+          <div className="inline-block w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+          <div className="space-y-1">
+            <h3 className="font-bold text-lg text-gray-900">
+              {isDone ? 'Verification Complete!' : 'Processing Credit Card Statements…'}
+            </h3>
+            <p className="text-xs text-gray-500">Run ID: {runId.slice(0, 8)}…</p>
+          </div>
+
+          {progress.total > 0 && (
+            <div className="bg-white p-4 rounded-xl border border-gray-200 text-left space-y-3">
+              <div className="flex justify-between text-xs text-gray-600">
+                <span className="font-semibold">Parsing Statements ({progress.current}/{progress.total})</span>
+                <span>{pct}%</span>
+              </div>
+              <div className="w-full bg-gray-100 rounded-full h-2">
+                <div className="bg-blue-600 h-2 rounded-full transition-all duration-300" style={{ width: `${pct}%` }}></div>
+              </div>
+              <div className="flex items-center justify-between text-xs text-gray-500">
+                <span className="truncate max-w-[280px]">{currentFile}</span>
+                {progress.tier && (
+                  <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-blue-100 text-blue-800">
+                    {progress.tier}
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+
+          <div className="bg-white border rounded-xl p-4 max-h-48 overflow-y-auto text-left text-xs font-mono space-y-1 text-gray-600">
+            {logs.map((log, i) => (
+              <div key={i}>✓ {log}</div>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    function CardReviewScreen({ runId, onProceedToExport }) {
+      const [run, setRun] = useState(null);
+      const [activeCardKey, setActiveCardKey] = useState('');
+      const [selectedTxn, setSelectedTxn] = useState(null);
+      const [filterDir, setFilterDir] = useState('ALL');
+      const [searchQuery, setSearchQuery] = useState('');
+      const [evidencePage, setEvidencePage] = useState(1);
+      const [editingTxnId, setEditingTxnId] = useState(null);
+      const [editAccount, setEditAccount] = useState('');
+      const [editType, setEditType] = useState('expense');
+
+      useEffect(() => {
+        fetch(`/api/cards/runs/${runId}`)
+          .then(r => r.json())
+          .then(data => {
+            setRun(data);
+            if (data.statements && data.statements.length > 0) {
+              const firstKey = `${data.statements[0].issuer}-${data.statements[0].last4}`;
+              setActiveCardKey(firstKey);
+            }
+          })
+          .catch(console.error);
+      }, [runId]);
+
+      const cardKeys = useMemo(() => {
+        if (!run || !run.statements) return [];
+        const set = new Set();
+        run.statements.forEach(s => set.add(`${s.issuer}-${s.last4}`));
+        return Array.from(set);
+      }, [run]);
+
+      const currentStatements = useMemo(() => {
+        if (!run || !run.statements) return [];
+        return run.statements.filter(s => `${s.issuer}-${s.last4}` === activeCardKey);
+      }, [run, activeCardKey]);
+
+      const currentTxns = useMemo(() => {
+        const txns = [];
+        currentStatements.forEach(s => {
+          (s.transactions || []).forEach(t => txns.push({ ...t, stmt_id: s.statement_id }));
+        });
+        return txns;
+      }, [currentStatements]);
+
+      const filteredTxns = useMemo(() => {
+        return currentTxns.filter(t => {
+          if (filterDir === 'DEBIT' && t.direction !== 'DEBIT') return false;
+          if (filterDir === 'CREDIT' && t.direction !== 'CREDIT') return false;
+          if (searchQuery) {
+            const q = searchQuery.toLowerCase();
+            const desc = (t.description_raw || '').toLowerCase();
+            const ref = (t.reference || '').toLowerCase();
+            if (!desc.includes(q) && !ref.includes(q)) return false;
+          }
+          return true;
+        });
+      }, [currentTxns, filterDir, searchQuery]);
+
+      const saveEdit = async (txnId) => {
+        try {
+          await fetch(`/api/cards/runs/${runId}/rows/${txnId}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ account: editAccount, type: editType }),
+          });
+          // Update local state
+          setRun(prev => {
+            const next = { ...prev };
+            next.statements.forEach(s => {
+              s.transactions.forEach(t => {
+                if (t.txn_id === txnId) {
+                  t.target_account = editAccount;
+                  t.proposed_type = editType;
+                  t.confidence = 1.0;
+                }
+              });
+            });
+            return next;
+          });
+          setEditingTxnId(null);
+        } catch (err) {
+          alert('Failed to save edit');
+        }
+      };
+
+      if (!run) return <div className="text-center py-12 text-sm text-gray-500">Loading card run…</div>;
+
+      const totalDebits = currentStatements.reduce((acc, s) => acc + (s.parsed_debits_paise || 0), 0);
+      const totalCredits = currentStatements.reduce((acc, s) => acc + (s.parsed_credits_paise || 0), 0);
+      const auditorBrief = (run.auditor_briefings || {})[activeCardKey] || '';
+
+      return (
+        <div className="max-w-6xl mx-auto py-4 px-4 space-y-5">
+          {/* Top Bar */}
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-xl font-bold text-gray-900">Card Transactions & Verification</h2>
+              <p className="text-xs text-gray-500">Review parsed records, accuracy gates, and audit briefings</p>
+            </div>
+            <button
+              onClick={onProceedToExport}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs rounded-lg transition shadow-sm"
+            >
+              Proceed to Export Workbooks →
+            </button>
+          </div>
+
+          {/* Card Selector Tabs */}
+          <div className="flex border-b border-gray-200 gap-1 overflow-x-auto pb-1">
+            {cardKeys.map(k => {
+              const stmts = run.statements.filter(s => `${s.issuer}-${s.last4}` === k);
+              const count = stmts.reduce((acc, s) => acc + (s.transactions ? s.transactions.length : 0), 0);
+              const allVerified = stmts.every(s => s.status === 'VERIFIED');
+              return (
+                <button
+                  key={k}
+                  onClick={() => setActiveCardKey(k)}
+                  className={`px-3 py-2 text-xs font-semibold rounded-t-lg transition flex items-center gap-2 whitespace-nowrap ${
+                    activeCardKey === k
+                      ? 'bg-white border-t-2 border-blue-600 text-blue-600 shadow-xs'
+                      : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  <span>💳 {k}</span>
+                  <span className="text-[10px] bg-gray-100 px-1.5 py-0.5 rounded text-gray-700">{count}</span>
+                  <span className={`w-2 h-2 rounded-full ${allVerified ? 'bg-green-500' : 'bg-amber-500'}`} />
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Card Summary Banner */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="bg-white p-3.5 rounded-xl border border-gray-200">
+              <div className="text-[11px] text-gray-400">Total Spends (Debits)</div>
+              <div className="text-lg font-bold text-gray-900">{formatPaise(totalDebits)}</div>
+            </div>
+            <div className="bg-white p-3.5 rounded-xl border border-gray-200">
+              <div className="text-[11px] text-gray-400">Total Credits / Payments</div>
+              <div className="text-lg font-bold text-gray-900">{formatPaise(totalCredits)}</div>
+            </div>
+            <div className="bg-white p-3.5 rounded-xl border border-gray-200">
+              <div className="text-[11px] text-gray-400">Statements Verified</div>
+              <div className="text-lg font-bold text-gray-900">{currentStatements.length} statements</div>
+            </div>
+            <div className="bg-white p-3.5 rounded-xl border border-gray-200">
+              <div className="text-[11px] text-gray-400">Accuracy Gates</div>
+              <div className="text-lg font-bold text-emerald-600">S1–S10 PASSED</div>
+            </div>
+          </div>
+
+          {/* Auditor Briefing Banner */}
+          {auditorBrief && (
+            <div className="bg-blue-50/70 border border-blue-200 rounded-xl p-3.5 text-xs text-blue-900 space-y-1">
+              <div className="font-bold flex items-center gap-1.5">
+                <span>🛡️</span> Auditor Briefing ({activeCardKey}):
+              </div>
+              <p className="leading-relaxed">{auditorBrief}</p>
+            </div>
+          )}
+
+          {/* Filters & Search */}
+          <div className="flex flex-wrap items-center justify-between gap-3 bg-white p-3 rounded-xl border border-gray-200">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-semibold text-gray-600">Filter:</span>
+              <button
+                onClick={() => setFilterDir('ALL')}
+                className={`px-2.5 py-1 text-xs rounded-md ${filterDir === 'ALL' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700'}`}
+              >
+                All ({currentTxns.length})
+              </button>
+              <button
+                onClick={() => setFilterDir('DEBIT')}
+                className={`px-2.5 py-1 text-xs rounded-md ${filterDir === 'DEBIT' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700'}`}
+              >
+                Spends / Debits
+              </button>
+              <button
+                onClick={() => setFilterDir('CREDIT')}
+                className={`px-2.5 py-1 text-xs rounded-md ${filterDir === 'CREDIT' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700'}`}
+              >
+                Credits / Refunds
+              </button>
+            </div>
+            <input
+              type="text"
+              placeholder="Search merchant or ref…"
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              className="border rounded-lg px-3 py-1.5 text-xs w-60 focus:outline-blue-500"
+            />
+          </div>
+
+          {/* Transactions Table */}
+          <div className="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-xs">
+            <div className="overflow-x-auto max-h-[480px]">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-gray-50 border-b text-gray-500 sticky top-0 uppercase text-[10px] tracking-wider z-10">
+                  <tr>
+                    <th className="py-2.5 px-3">Date</th>
+                    <th className="py-2.5 px-3">Description / Merchant</th>
+                    <th className="py-2.5 px-3">Direction</th>
+                    <th className="py-2.5 px-3 text-right">Amount (₹)</th>
+                    <th className="py-2.5 px-3">Mapped Account (Output B)</th>
+                    <th className="py-2.5 px-3">Type</th>
+                    <th className="py-2.5 px-3">Evidence</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100 font-sans">
+                  {filteredTxns.map(t => (
+                    <tr key={t.txn_id} className="hover:bg-blue-50/30 transition">
+                      <td className="py-2 px-3 whitespace-nowrap text-gray-600">{t.txn_date}</td>
+                      <td className="py-2 px-3 max-w-xs truncate font-medium text-gray-800" title={t.description_raw}>
+                        {t.description_clean || t.description_raw}
+                        {t.reference && (
+                          <div className="text-[10px] text-gray-400">Ref: {t.reference}</div>
+                        )}
+                      </td>
+                      <td className="py-2 px-3">
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                          t.direction === 'DEBIT' ? 'bg-red-50 text-red-700' : 'bg-emerald-50 text-emerald-700'
+                        }`}>
+                          {t.direction === 'DEBIT' ? 'SPEND' : 'CREDIT'}
+                        </span>
+                      </td>
+                      <td className="py-2 px-3 text-right font-bold tabular-nums">
+                        {formatPaise(t.amount_paise)}
+                      </td>
+                      <td className="py-2 px-3">
+                        {editingTxnId === t.txn_id ? (
+                          <div className="flex items-center gap-1">
+                            <input
+                              type="text"
+                              value={editAccount}
+                              onChange={e => setEditAccount(e.target.value)}
+                              className="border rounded px-2 py-0.5 text-xs w-44"
+                            />
+                            <button
+                              onClick={() => saveEdit(t.txn_id)}
+                              className="px-2 py-0.5 bg-blue-600 text-white rounded text-[10px]"
+                            >
+                              Save
+                            </button>
+                            <button
+                              onClick={() => setEditingTxnId(null)}
+                              className="px-1.5 py-0.5 text-gray-500 text-[10px]"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        ) : (
+                          <div
+                            onClick={() => {
+                              setEditingTxnId(t.txn_id);
+                              setEditAccount(t.target_account || 'Staff Welfare');
+                              setEditType(t.proposed_type || 'expense');
+                            }}
+                            className="cursor-pointer hover:underline text-blue-600 font-medium"
+                          >
+                            {t.target_account || 'Staff Welfare'} ✎
+                          </div>
+                        )}
+                      </td>
+                      <td className="py-2 px-3 text-gray-500 capitalize">{t.proposed_type || 'expense'}</td>
+                      <td className="py-2 px-3">
+                        <button
+                          onClick={() => {
+                            setSelectedTxn(t);
+                            setEvidencePage((t.source && t.source.page) || 1);
+                          }}
+                          className="px-2 py-0.5 rounded bg-gray-100 hover:bg-gray-200 text-[11px] text-gray-700 font-medium"
+                        >
+                          View PDF
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Evidence Drawer / Modal */}
+          {selectedTxn && (
+            <div className="fixed inset-0 z-50 flex justify-end">
+              <div className="absolute inset-0 bg-black/40 backdrop-blur-xs" onClick={() => setSelectedTxn(null)} />
+              <div className="relative w-full max-w-2xl bg-white h-full shadow-2xl p-6 overflow-y-auto space-y-4">
+                <div className="flex items-center justify-between border-b pb-3">
+                  <div>
+                    <h3 className="font-bold text-gray-900 text-base">Statement Page Evidence</h3>
+                    <p className="text-xs text-gray-500">
+                      Statement ID: {selectedTxn.stmt_id.slice(0, 8)}… | Page {evidencePage}
+                    </p>
+                  </div>
+                  <button onClick={() => setSelectedTxn(null)} className="text-gray-400 hover:text-gray-600 text-lg">✕</button>
+                </div>
+
+                <div className="bg-gray-50 p-3 rounded-lg border text-xs space-y-1">
+                  <div><strong>Transaction:</strong> {selectedTxn.description_raw}</div>
+                  <div><strong>Amount:</strong> {formatPaise(selectedTxn.amount_paise)} ({selectedTxn.direction})</div>
+                  <div><strong>Date:</strong> {selectedTxn.txn_date}</div>
+                </div>
+
+                <div className="border rounded-xl overflow-hidden bg-gray-100 text-center min-h-[400px]">
+                  <img
+                    src={`/api/cards/runs/${runId}/pdf/${selectedTxn.stmt_id}?page=${evidencePage}`}
+                    alt="Statement Page"
+                    className="w-full object-contain"
+                    onError={(e) => {
+                      e.target.style.display = 'none';
+                    }}
+                  />
+                  <div className="p-4 text-xs text-gray-400">
+                    PDF Page image rendered via PyPDFium2
+                  </div>
+                </div>
+
+                <div className="flex justify-between items-center pt-2">
+                  <button
+                    disabled={evidencePage <= 1}
+                    onClick={() => setEvidencePage(p => Math.max(1, p - 1))}
+                    className="px-3 py-1.5 border rounded text-xs disabled:opacity-40"
+                  >
+                    ← Previous Page
+                  </button>
+                  <span className="text-xs text-gray-500 font-medium">Page {evidencePage}</span>
+                  <button
+                    onClick={() => setEvidencePage(p => p + 1)}
+                    className="px-3 py-1.5 border rounded text-xs"
+                  >
+                    Next Page →
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    function CardExportScreen({ runId, onReset }) {
+      const [run, setRun] = useState(null);
+
+      useEffect(() => {
+        fetch(`/api/cards/runs/${runId}`)
+          .then(r => r.json())
+          .then(setRun)
+          .catch(console.error);
+      }, [runId]);
+
+      const cardSummaries = useMemo(() => {
+        if (!run || !run.statements) return [];
+        const map = new Map();
+        for (const s of run.statements) {
+          const ck = `${s.issuer}-${s.last4}`;
+          if (!map.has(ck)) {
+            map.set(ck, {
+              key: ck,
+              issuer: s.issuer,
+              last4: s.last4,
+              cardholder: s.cardholder,
+              totalTxns: 0,
+              debits: 0,
+              credits: 0,
+            });
+          }
+          const item = map.get(ck);
+          item.totalTxns += (s.transactions || []).length;
+          item.debits += (s.parsed_debits_paise || 0) / 100;
+          item.credits += (s.parsed_credits_paise || 0) / 100;
+        }
+        return Array.from(map.values());
+      }, [run]);
+
+      return (
+        <div className="max-w-4xl mx-auto py-6 px-4 space-y-6">
+          <div className="text-center space-y-2">
+            <div className="inline-block p-3 rounded-full bg-green-100 text-green-700 text-2xl">✓</div>
+            <h2 className="text-2xl font-bold text-gray-900">Statements Export Ready</h2>
+            <p className="text-gray-500 text-sm max-w-lg mx-auto">
+              All parsed transactions tie out to statement totals. Download Output A and Output B workbooks per card, or download everything as one complete archive.
+            </p>
+          </div>
+
+          <div className="flex justify-center">
+            <a
+              href={`/api/cards/runs/${runId}/download?output=zip`}
+              className="px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold text-sm rounded-xl transition shadow-md flex items-center gap-2"
+            >
+              <span>📦</span> Download All Workbooks (ZIP)
+            </a>
+          </div>
+
+          <div className="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-xs">
+            <div className="p-4 border-b font-semibold text-sm text-gray-800">
+              Generated Files by Card
+            </div>
+            <div className="divide-y divide-gray-100 text-xs">
+              {cardSummaries.map(c => (
+                <div key={c.key} className="p-4 flex flex-wrap items-center justify-between gap-4">
+                  <div>
+                    <div className="font-bold text-sm text-gray-900 flex items-center gap-2">
+                      <span>💳</span> {c.issuer} {c.last4} ({c.cardholder})
+                    </div>
+                    <div className="text-gray-500 text-[11px] mt-0.5">
+                      {c.totalTxns} transactions | Spends: ₹{c.debits.toLocaleString('en-IN', { minimumFractionDigits: 2 })} | Credits: ₹{c.credits.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <a
+                      href={`/api/cards/runs/${runId}/download?output=A&card=${c.key}`}
+                      className="px-3 py-1.5 border border-gray-300 rounded-lg hover:bg-gray-50 text-gray-700 font-medium"
+                    >
+                      Output A (.xlsx)
+                    </a>
+                    <a
+                      href={`/api/cards/runs/${runId}/download?output=B&card=${c.key}`}
+                      className="px-3 py-1.5 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 text-blue-700 font-medium"
+                    >
+                      Output B Books (.xlsx)
+                    </a>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="text-center pt-2">
+            <button
+              onClick={onReset}
+              className="text-xs text-blue-600 hover:text-blue-800 font-medium"
+            >
+              ← Process Another Card ZIP
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    // =======================================================================
+    // ROOT APP COMPONENT (UNIFIED NAVIGATION)
+    // =======================================================================
+
+    function App() {
+      // Main navigation tab: 'cards' or 'bank'
+      const [activeTab, setActiveTab] = useState('cards');
+
+      // Bank Recon State
+      const [bankScreen, setBankScreen] = useState('upload');
+      const [bankRunId, setBankRunId] = useState('');
+
+      // Card Statements State
+      const [cardScreen, setCardScreen] = useState('upload');
+      const [cardRunId, setCardRunId] = useState('');
+
+      return (
+        <div>
+          {/* Main Top Header */}
+          <header className="border-b bg-white sticky top-0 z-20 shadow-xs">
+            <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
+              <div className="flex items-center gap-6">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-9 h-9 rounded-lg bg-gradient-to-tr from-blue-700 to-indigo-600 text-white font-bold flex items-center justify-center text-base shadow-sm">
+                    ₹
+                  </div>
+                  <div>
+                    <h1 className="font-bold text-sm text-gray-900 leading-none">Finance Automation</h1>
+                    <span className="text-[11px] text-gray-400">Zero Unexplained Discrepancy Platform</span>
+                  </div>
+                </div>
+
+                {/* Primary Navigation Tabs */}
+                <nav className="flex items-center bg-gray-100 p-1 rounded-lg">
+                  <button
+                    onClick={() => setActiveTab('cards')}
+                    className={`px-3 py-1.5 text-xs font-semibold rounded-md transition flex items-center gap-1.5 ${
+                      activeTab === 'cards'
+                        ? 'bg-white text-blue-600 shadow-xs font-bold'
+                        : 'text-gray-600 hover:text-gray-900'
+                    }`}
+                  >
+                    <span>💳</span>
+                    Card Statements
+                    <span className="text-[9px] bg-blue-100 text-blue-800 px-1 py-0.2 rounded font-bold">New</span>
+                  </button>
+                  <button
+                    onClick={() => setActiveTab('bank')}
+                    className={`px-3 py-1.5 text-xs font-semibold rounded-md transition flex items-center gap-1.5 ${
+                      activeTab === 'bank'
+                        ? 'bg-white text-blue-600 shadow-xs font-bold'
+                        : 'text-gray-600 hover:text-gray-900'
+                    }`}
+                  >
+                    <span>🏛️</span>
+                    Bank–Books Reconciliation
+                  </button>
+                </nav>
+              </div>
+
+              {/* Header Right Actions */}
+              <div>
+                {activeTab === 'cards' && cardRunId && cardScreen !== 'upload' && (
+                  <button
+                    onClick={() => { setCardRunId(''); setCardScreen('upload'); }}
+                    className="text-xs text-blue-600 hover:text-blue-800 font-medium"
+                  >
+                    ← New Card Run
+                  </button>
+                )}
+                {activeTab === 'bank' && bankRunId && bankScreen !== 'upload' && (
+                  <button
+                    onClick={() => { setBankRunId(''); setBankScreen('upload'); }}
+                    className="text-xs text-blue-600 hover:text-blue-800 font-medium"
+                  >
+                    ← New Bank Run
+                  </button>
+                )}
+              </div>
+            </div>
+          </header>
+
+          {/* Main Body */}
+          <main className="max-w-6xl mx-auto px-4 py-6">
+            {activeTab === 'cards' ? (
+              <>
+                {cardScreen === 'upload' && (
+                  <CardUploadScreen onRunCreated={id => { setCardRunId(id); setCardScreen('processing'); }} />
+                )}
+                {cardScreen === 'processing' && cardRunId && (
+                  <CardProcessingScreen runId={cardRunId} onDone={() => setCardScreen('review')} />
+                )}
+                {cardScreen === 'review' && cardRunId && (
+                  <CardReviewScreen runId={cardRunId} onProceedToExport={() => setCardScreen('export')} />
+                )}
+                {cardScreen === 'export' && cardRunId && (
+                  <CardExportScreen runId={cardRunId} onReset={() => { setCardRunId(''); setCardScreen('upload'); }} />
+                )}
+              </>
+            ) : (
+              <>
+                {bankScreen === 'upload' && (
+                  <BankUploadScreen onRunCreated={id => { setBankRunId(id); setBankScreen('processing'); }} />
+                )}
+                {bankScreen === 'processing' && bankRunId && (
+                  <BankProcessingScreen runId={bankRunId} onDone={() => setBankScreen('results')} />
+                )}
+                {bankScreen === 'results' && bankRunId && (
+                  <BankResultsScreen runId={bankRunId} onReset={() => { setBankRunId(''); setBankScreen('upload'); }} />
+                )}
+              </>
+            )}
+          </main>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>

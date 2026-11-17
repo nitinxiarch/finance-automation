@@ -1,0 +1,18 @@
+fastapi==0.162.7
+uvicorn[standard]>=0.29.0
+pydantic>=2.9.0
+pandas>=2.0.0
+openpyxl>=3.1.5
+xlrd>=2.0.1
+xlwt>=1.3.0
+rapidfuzz>=3.0.0
+httpx>=0.27.0
+aiofiles>=23.0.0
+python-multipart>=0.0.9
+python-dotenv>=1.0.0
+# Card Statements feature (Contract 2)
+pdfplumber>=0.11.0
+pypdfium2>=5.0.0
+pytesseract>=0.3.13
+pillow>=10.0.0
+
