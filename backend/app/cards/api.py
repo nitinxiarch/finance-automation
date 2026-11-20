@@ -13,8 +13,9 @@ import os
 import shutil
 import tempfile
 import uuid
+import zipfile
 from pathlib import Path
-from typing import Any, AsyncGenerator, Optional
+from typing import Any, AsyncGenerator, List, Optional
 
 import aiofiles
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Query, UploadFile
@@ -48,29 +49,57 @@ class RowPatchRequest(BaseModel):
 @router.post("/runs")
 async def create_card_run(
     background_tasks: BackgroundTasks,
-    zip_file: UploadFile = File(...),
+    zip_file: Optional[UploadFile] = File(None),
+    pdf_files: Optional[List[UploadFile]] = File(None),
     books_ref: Optional[UploadFile] = File(None),
     org_name: str = Form("Xiarch Bharat Private Limited"),
     location_name: str = Form("XIARCH GURGAON BRANCH"),
 ):
-    """Upload statements ZIP and optional books reference export."""
+    """Upload a statements ZIP and/or multiple loose PDFs, plus optional books reference."""
+    pdfs = [p for p in (pdf_files or []) if p and p.filename]
+    has_zip = bool(zip_file and zip_file.filename)
+
+    if not has_zip and not pdfs:
+        raise HTTPException(400, "Upload a ZIP file and/or one or more PDF files")
+
+    for p in pdfs:
+        if not p.filename.lower().endswith(".pdf"):
+            raise HTTPException(400, f"Only PDF files are allowed: {p.filename}")
+
     run_id = str(uuid.uuid4())
     run_upload_dir = UPLOAD_DIR / run_id
     run_upload_dir.mkdir(parents=True, exist_ok=True)
 
-    # Save ZIP
-    zip_path = run_upload_dir / (zip_file.filename or "statements.zip")
-    async with aiofiles.open(str(zip_path), "wb") as f:
-        content = await zip_file.read()
-        await f.write(content)
+    # Build ONE combined ZIP so the existing pipeline/viewer work unchanged
+    zip_path = run_upload_dir / "statements_combined.zip"
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as out:
+        # 1) entries from the uploaded ZIP (names kept as-is, so ingest_zip's
+        #    zip-slip / nested-archive checks still apply)
+        if has_zip:
+            raw_zip = run_upload_dir / "_uploaded.zip"
+            raw_zip.write_bytes(await zip_file.read())
+            try:
+                with zipfile.ZipFile(raw_zip) as src:
+                    for info in src.infolist():
+                        if info.is_dir():
+                            continue
+                        out.writestr(info.filename, src.read(info.filename))
+            except zipfile.BadZipFile:
+                raise HTTPException(400, "Uploaded file is not a valid ZIP")
+            finally:
+                raw_zip.unlink(missing_ok=True)
+
+        # 2) loose PDFs (prefixed to avoid name clashes with ZIP entries)
+        for i, p in enumerate(pdfs, start=1):
+            safe = Path(p.filename).name
+            out.writestr(f"{i:03d}_{safe}", await p.read())
 
     # Save optional books ref
     books_ref_path: Optional[Path] = None
     if books_ref and books_ref.filename:
-        books_ref_path = run_upload_dir / books_ref.filename
+        books_ref_path = run_upload_dir / Path(books_ref.filename).name
         async with aiofiles.open(str(books_ref_path), "wb") as f:
-            content = await books_ref.read()
-            await f.write(content)
+            await f.write(await books_ref.read())
 
     _sse_queues[run_id] = asyncio.Queue()
     _card_run_files[run_id] = {
@@ -80,7 +109,6 @@ async def create_card_run(
         "location_name": location_name,
     }
 
-    # Start pipeline in background task
     background_tasks.add_task(
         _execute_pipeline_task,
         run_id=run_id,

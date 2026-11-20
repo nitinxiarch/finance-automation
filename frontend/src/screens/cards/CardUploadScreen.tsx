@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback } from 'react'
-import { uploadCardZip } from '../../lib/cards-api'
+import { uploadCardFiles } from '../../lib/cards-api'
 
 interface CardUploadScreenProps {
   onRunCreated: (runId: string) => void
@@ -16,6 +16,9 @@ export function CardUploadScreen({ onRunCreated }: CardUploadScreenProps) {
   const [dragOverBooks, setDragOverBooks] = useState(false)
 
   const zipInputRef = useRef<HTMLInputElement>(null)
+  const [pdfFiles, setPdfFiles] = useState<File[]>([])
+  const [dragOverPdf, setDragOverPdf] = useState(false)
+  const pdfInputRef = useRef<HTMLInputElement>(null)
   const booksInputRef = useRef<HTMLInputElement>(null)
 
   const handleZipDrop = useCallback((e: React.DragEvent) => {
@@ -39,21 +42,42 @@ export function CardUploadScreen({ onRunCreated }: CardUploadScreenProps) {
     }
   }, [])
 
-  const handleStartProcessing = async () => {
-    if (!zipFile) {
-      setError('Please select a ZIP file with statement PDFs')
+  const addPdfs = (list: FileList | File[]) => {
+    const incoming = Array.from(list).filter((f) => f.name.toLowerCase().endsWith('.pdf'))
+    if (incoming.length === 0) {
+      setError('Please select PDF files only')
       return
     }
+    setPdfFiles((prev) => {
+      const seen = new Set(prev.map((f) => `${f.name}:${f.size}`))
+      return [...prev, ...incoming.filter((f) => !seen.has(`${f.name}:${f.size}`))]
+    })
+    setError(null)
+  }
 
+  const handlePdfDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    setDragOverPdf(false)
+    addPdfs(e.dataTransfer.files)
+  }, [])
+
+  const removePdf = (idx: number) =>
+    setPdfFiles((prev) => prev.filter((_, i) => i !== idx))
+
+  const hasInput = !!zipFile || pdfFiles.length > 0
+
+  const handleStartProcessing = async () => {
+    if (!hasInput) {
+      setError('Please add a ZIP file and/or at least one PDF statement')
+      return
+    }
     setIsUploading(true)
     setError(null)
-
     try {
-      const resp = await uploadCardZip(zipFile, booksFile || undefined, orgName, locationName)
+      const resp = await uploadCardFiles(zipFile, pdfFiles, booksFile || undefined, orgName, locationName)
       onRunCreated(resp.run_id)
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Upload failed'
-      setError(msg)
+      setError(err instanceof Error ? err.message : 'Upload failed')
       setIsUploading(false)
     }
   }
@@ -66,7 +90,7 @@ export function CardUploadScreen({ onRunCreated }: CardUploadScreenProps) {
           Credit Card PDFs → Statement & Books Excel
         </h2>
         <p className="text-sm text-gray-600 dark:text-gray-400 max-w-2xl mx-auto">
-          Upload a ZIP archive containing monthly credit card statement PDFs (HDFC, Axis, ICICI, IDFC, SBI).
+          Upload a ZIP archive and/or multiple PDFs of monthly credit card statement PDFs (HDFC, Axis, ICICI, IDFC, SBI).
           The engine reads every PDF, verifies totals to the paisa, and fills both Output A (Statement) and Output B (Books) workbooks.
         </p>
       </div>
@@ -126,6 +150,74 @@ export function CardUploadScreen({ onRunCreated }: CardUploadScreenProps) {
           )}
         </div>
       </div>
+
+      {/* AND / OR: Multiple PDF upload */}
+      <div className="flex items-center gap-3 text-xs text-gray-500">
+        <div className="flex-1 border-t border-gray-300 dark:border-gray-700" />
+        <span>AND / OR</span>
+        <div className="flex-1 border-t border-gray-300 dark:border-gray-700" />
+      </div>
+
+      <div
+        onDragOver={(e) => { e.preventDefault(); setDragOverPdf(true) }}
+        onDragLeave={() => setDragOverPdf(false)}
+        onDrop={handlePdfDrop}
+        onClick={() => pdfInputRef.current?.click()}
+        className={`border-2 border-dashed rounded-2xl p-6 text-center cursor-pointer transition-all duration-200
+          ${dragOverPdf
+            ? 'border-blue-500 bg-blue-50/50 dark:bg-blue-900/20'
+            : pdfFiles.length > 0
+            ? 'border-green-500 bg-green-50/30 dark:bg-green-900/10'
+            : 'border-gray-300 dark:border-gray-700 hover:border-blue-400 bg-white dark:bg-gray-800/50'
+          }`}
+      >
+        <input
+          ref={pdfInputRef}
+          type="file"
+          accept=".pdf,application/pdf"
+          multiple
+          className="hidden"
+          onChange={(e) => {
+            if (e.target.files) addPdfs(e.target.files)
+            e.target.value = ''
+          }}
+        />
+        <div className="flex flex-col items-center space-y-2">
+          <span className="text-3xl">📄</span>
+          <p className="text-base font-semibold text-gray-800 dark:text-gray-200">
+            Drop multiple credit card PDFs here, or click to browse
+          </p>
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            {pdfFiles.length > 0
+              ? `${pdfFiles.length} PDF${pdfFiles.length > 1 ? 's' : ''} selected — click to add more`
+              : 'Select several statement PDFs at once (HDFC, Axis, ICICI, IDFC, SBI)'}
+          </p>
+        </div>
+      </div>
+
+      {pdfFiles.length > 0 && (
+        <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-3 max-h-48 overflow-y-auto">
+          <div className="flex justify-between items-center mb-2">
+            <p className="text-xs font-semibold text-gray-700 dark:text-gray-300">
+              {pdfFiles.length} PDF file{pdfFiles.length > 1 ? 's' : ''}
+            </p>
+            <button onClick={() => setPdfFiles([])} className="text-xs text-red-600 hover:underline">
+              Clear all
+            </button>
+          </div>
+          <ul className="space-y-1">
+            {pdfFiles.map((f, i) => (
+              <li key={`${f.name}-${i}`} className="flex items-center justify-between text-xs text-gray-700 dark:text-gray-300">
+                <span className="truncate">{f.name}</span>
+                <span className="flex items-center gap-3 shrink-0">
+                  <span className="text-gray-400">{(f.size / 1024).toFixed(0)} KB</span>
+                  <button onClick={() => removePdf(i)} className="text-red-500 hover:text-red-700">✕</button>
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {/* Secondary Options */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -204,9 +296,9 @@ export function CardUploadScreen({ onRunCreated }: CardUploadScreenProps) {
       <div className="flex justify-end pt-2">
         <button
           onClick={handleStartProcessing}
-          disabled={!zipFile || isUploading}
+          disabled={!hasInput || isUploading}
           className={`px-6 py-2.5 rounded-lg text-sm font-semibold text-white transition-all shadow-sm
-            ${!zipFile || isUploading
+            ${!hasInput || isUploading
               ? 'bg-gray-400 cursor-not-allowed'
               : 'bg-blue-600 hover:bg-blue-700 focus:ring-4 focus:ring-blue-300'
             }`}
